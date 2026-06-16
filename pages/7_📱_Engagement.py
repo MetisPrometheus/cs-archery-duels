@@ -22,6 +22,43 @@ if eng.empty:
 
 n = len(eng)
 returned = int((eng["days_played"] >= 2).sum())
+
+# ── Playtime drop-off (survival) curve ───────────────────────────────────
+section("Playtime drop-off curve",
+        "% of players still in the game as minutes-played climbs. Source: "
+        "current-day playtime (STATS.dailyPlaytime.seconds) — resets daily, so "
+        "read it as within-a-day engagement. (Lifetime totalPlaytime isn't wired "
+        "game-side yet — it's 0 for ~all players.)")
+sv = q.playtime_survival()
+if not sv.empty and sv["remaining"].iloc[0] > 0:
+    fig = go.Figure(go.Scatter(
+        x=sv["minutes"], y=sv["pct"], mode="lines+markers",
+        fill="tozeroy", line=dict(color=ARCHERY["primary"], width=2),
+        fillcolor="rgba(242,177,52,0.15)", marker=dict(size=6),
+        hovertemplate="%{x:.0f} min → %{y:.1f}% remaining<extra></extra>",
+    ))
+    fig.update_layout(
+        xaxis_title="Minutes played (that day)",
+        yaxis_title="% of players still in",
+        yaxis=dict(range=[0, 100]),
+    )
+    st.plotly_chart(themed(fig), use_container_width=True)
+
+    # Milestone callouts at key minute marks.
+    def _pct_at(sec: int) -> float:
+        row = sv[sv["seconds"] == sec]
+        return float(row["pct"].iloc[0]) if not row.empty else 0.0
+    # median = first threshold where remaining drops below 50%
+    below = sv[sv["pct"] < 50]
+    median_min = float(below["minutes"].iloc[0]) if not below.empty else float(sv["minutes"].iloc[-1])
+    kpi_row([
+        {"label": "Median time", "value": f"~{median_min:.0f} min",
+         "sub": "half the players pass this", "style": "accent"},
+        {"label": "Reach 5 min", "value": format_pct(_pct_at(300))},
+        {"label": "Reach 10 min", "value": format_pct(_pct_at(600))},
+        {"label": "Reach 30 min", "value": format_pct(_pct_at(1800)), "style": "warn"},
+    ])
+
 section("Sessions & retention")
 kpi_row([
     {"label": "Sessions / player", "avg": f"{eng['sessions'].mean():.1f}",

@@ -494,6 +494,42 @@ def engagement_stats() -> pd.DataFrame:
     )
 
 
+def playtime_survival() -> pd.DataFrame:
+    """Drop-off / survival curve: % of players who reached at least N minutes
+    of play. Columns: seconds, minutes, remaining, pct.
+
+    Source is `STATS.dailyPlaytime.seconds` (current-day playtime) — the only
+    populated playtime signal. `METRICS.sessions.totalPlaytime` is effectively
+    unwired (0 for ~99% of players; likely only written on player-leave, which
+    the Open Cloud poll rarely captures). dailyPlaytime resets each UTC day, so
+    read this as "within-a-day engagement", not lifetime.
+    """
+    src = player_src()
+    thresholds = [
+        0, 30, 60, 90, 120, 180, 240, 300, 420, 600, 900, 1200, 1500,
+        1800, 2400, 3000, 3600, 4800, 6000,
+    ]
+    out = df(
+        f"""
+        WITH base AS (
+            SELECT COALESCE((p.data->'STATS'->'dailyPlaytime'->>'seconds')::int, 0) AS pt
+            FROM {src}
+        ), tot AS (SELECT COUNT(*)::float n FROM base)
+        SELECT thr AS seconds,
+               (SELECT COUNT(*) FROM base WHERE pt >= thr)                          AS remaining,
+               (SELECT COUNT(*) FROM base WHERE pt >= thr)::float
+                   / NULLIF((SELECT n FROM tot), 0) * 100                            AS pct
+        FROM unnest(%s::int[]) AS thr
+        ORDER BY thr
+        """,
+        (thresholds,),
+    )
+    if not out.empty:
+        out["minutes"] = (out["seconds"] / 60).round(2)
+        out["pct"] = out["pct"].round(1)
+    return out
+
+
 def retention_by_signup(days: int = 60) -> pd.DataFrame:
     """For each signup day, how many came back ≥2 days / played ≥1 match."""
     src = player_src()
