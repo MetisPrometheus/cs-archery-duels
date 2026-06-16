@@ -13,3 +13,9 @@ SELECT *
 FROM players
 WHERE status = 'ok'
   AND COALESCE(playtime_seconds, 0) < 864000000;   -- < 10000 days
+
+-- The view is created by the postgres superuser, so the project roles need
+-- explicit SELECT (default-privilege grants only cover the creating role).
+-- Re-applying this file re-grants — safe and idempotent.
+GRANT SELECT ON players_clean TO archery_duels_rw;
+GRANT SELECT ON players_clean TO archery_duels_ro;
