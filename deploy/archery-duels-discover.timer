@@ -1,0 +1,14 @@
+[Unit]
+Description=Hourly Archery Duels player discovery rescan
+Requires=archery-duels-discover.service
+
+[Timer]
+# Every hour on the hour. Catches new players within ~1h of joining; they
+# then get fetched on the running daemon's next poll. Well within Roblox
+# Open Cloud's 60s rolling quota window.
+OnCalendar=hourly
+RandomizedDelaySec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

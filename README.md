@@ -7,37 +7,42 @@ an Open Cloud DataStore dumper writes player saves to Postgres on the shared
 TLS via a read-only role. Shared infra/provisioning lives in
 [`iw-infra`](https://github.com/MetisPrometheus/iw-infra).
 
-## Status: discovery phase
+Universe ID `10297420029`. See [`CLAUDE.md`](CLAUDE.md) for the full picture and
+[`docs/save-structure.md`](docs/save-structure.md) for the real save shape.
 
-We're building this in order. **Step 1 (now): confirm the real save structure**
-before designing the schema — using the single-player inspector rather than
-inferring shape from the game's Lua `PlayerMetricsConfig` / STATS modules.
+## Layout
 
-```bash
-cp .env.example .env        # fill in ROBLOX_API_KEY + ROBLOX_UNIVERSE_ID
-# (no venv needed — the inspector is stdlib-only)
-
-python dump_one_player.py --list-stores              # what stores exist?
-python dump_one_player.py --store <name> --list-keys # key naming?
-python dump_one_player.py --store <name> --key <key> # dump one entry
-python dump_one_player.py --user <userId>            # or auto-probe by user id
+```
+db.py                  Postgres schema + ETL (flatten + child tables)
+dump_all_players.py    Resumable two-phase dumper (daemon / discover / one-shot)
+dump_one_player.py     Single-player DataStore inspector (discovery/debug tool)
+dashboard.py           Streamlit home
+pages/                 Funnel · Aim · Combat · Match Flow · Inventory ·
+                       Monetization · Engagement · Performance · Player Profile
+lib/                   queries (cached SQL) · theme · global filter
+deploy/                systemd units + players_clean_view.sql
+docs/save-structure.md ground-truth save shape (captured live)
 ```
 
-Dumped entries are saved (pretty-printed) under `samples/` (git-ignored).
+## Local dev
 
-> **API key:** the ocean-quest Open Cloud key is scoped to the ocean-quest
-> universe only and won't read Archery Duels. Either add the Archery Duels
-> experience to that key's access list, or create a new key — then put it and
-> the Archery Duels universe id in `.env`.
+```bash
+cp .env.example .env          # ROBLOX_API_KEY + ROBLOX_UNIVERSE_ID + DATABASE_URL
+python3 -m venv venv && ./venv/bin/pip install -r requirements.txt
 
-## Still to build (after we see real structure)
+# Inspect one player's live save (no DB needed):
+./venv/bin/python dump_one_player.py --user <userId>
 
-- `db.py` — Postgres schema + ETL, modelled on the actual save (STATS +
-  METRICS). The METRICS side is histogram-bucket-heavy (aim hold, shoot delay,
-  match length, load time) per `PlayerMetricsConfig`.
-- `dump_all_players.py` — full resumable two-phase dumper (port from
-  ocean-quest: token bucket, cooldown, `--daemon`/`--discover-only`).
-- `dashboard.py` + `pages/` + `lib/` — Streamlit dashboard.
-- `deploy/` — systemd units; provision via `iw-infra/setup.sh archery-duels`.
+# Run the dumper once against the DB:
+./venv/bin/python db.py init
+./venv/bin/python dump_all_players.py --max 50
 
-See [`CLAUDE.md`](CLAUDE.md) for the per-project context a future session needs.
+# Run the dashboard locally (needs DATABASE_URL):
+./venv/bin/streamlit run dashboard.py
+```
+
+## Deploy
+
+See [`deploy/README.md`](deploy/README.md). On the box: clone, run
+`iw-infra/setup.sh archery-duels`, drop secrets into `/etc/archery-duels/env`,
+start the daemon. Dashboard auto-deploys from `main` to Streamlit Cloud.

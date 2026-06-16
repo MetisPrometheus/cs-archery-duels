@@ -1,0 +1,33 @@
+[Unit]
+Description=Archery Duels player fetch daemon
+After=network-online.target postgresql.service
+Wants=network-online.target
+Requires=postgresql.service
+
+[Service]
+Type=simple
+User=archery-duels
+Group=archery-duels
+WorkingDirectory=/opt/projects/archery-duels
+EnvironmentFile=/etc/archery-duels/env
+ExecStart=/opt/projects/archery-duels/venv/bin/python dump_all_players.py --daemon --workers 20 --rate 120 --batch-size 100 --batch-pause 40 --refresh-after 12
+Restart=always
+RestartSec=10
+
+# Resource caps: leave plenty of headroom for Postgres + other projects.
+MemoryMax=1G
+CPUQuota=150%
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/projects/archery-duels
+ProtectHome=true
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
