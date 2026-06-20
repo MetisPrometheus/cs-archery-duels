@@ -460,6 +460,62 @@ def purchasers(n: int = 50) -> pd.DataFrame:
     )
 
 
+def chest_progress_summary() -> dict[str, Any]:
+    """Headline numbers for `lifetime_wins_for_chests` — the win-count players
+    grind toward chest rewards. Stats over players who have any progress."""
+    src = player_src()
+    rows = df(
+        f"""
+        SELECT
+            COUNT(*)                                                            AS cohort_n,
+            COUNT(*) FILTER (WHERE COALESCE(lifetime_wins_for_chests,0) > 0)     AS with_progress,
+            COALESCE(AVG(lifetime_wins_for_chests)
+                     FILTER (WHERE lifetime_wins_for_chests > 0), 0)::float      AS avg_progress,
+            COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY lifetime_wins_for_chests)
+                     FILTER (WHERE lifetime_wins_for_chests > 0), 0)::float      AS median_progress,
+            COALESCE(MAX(lifetime_wins_for_chests), 0)                          AS max_progress
+        FROM {src}
+        """
+    )
+    return {} if rows.empty else rows.iloc[0].to_dict()
+
+
+def chest_progression() -> pd.DataFrame:
+    """Per-player `lifetime_wins_for_chests` for players with any progress,
+    for a distribution histogram."""
+    src = player_src()
+    return df(
+        f"""
+        SELECT user_id, COALESCE(lifetime_wins_for_chests, 0) AS wins_for_chests
+        FROM {src}
+        WHERE COALESCE(lifetime_wins_for_chests, 0) > 0
+        """
+    )
+
+
+def product_breakdown(n: int = 30) -> pd.DataFrame:
+    """Product-level purchase breakdown from the player_purchases child table
+    (which the dashboard otherwise never surfaces — only the aggregate count)."""
+    user_in = _user_id_in_filter()
+    where = f"WHERE {user_in}" if user_in else ""
+    return df(
+        f"""
+        SELECT
+            COALESCE(product_id, '(unknown)')  AS product_id,
+            COUNT(*)                           AS purchases,
+            COUNT(DISTINCT user_id)            AS buyers,
+            MIN(purchased_at)                  AS first_purchase,
+            MAX(purchased_at)                  AS last_purchase
+        FROM player_purchases
+        {where}
+        GROUP BY product_id
+        ORDER BY purchases DESC NULLS LAST
+        LIMIT %s
+        """,
+        (n,),
+    )
+
+
 # ── Engagement ───────────────────────────────────────────────────────────
 def screen_open_aggregates() -> pd.DataFrame:
     user_in = _user_id_in_filter()

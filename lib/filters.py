@@ -98,19 +98,29 @@ def render_global_filter() -> None:
         f = st.session_state["global_filter"]
 
         with st.expander("Join date range", expanded=bool(f.get("join_from") or f.get("join_to"))):
-            c1, c2 = st.columns(2)
-            with c1:
-                join_from = st.date_input(
-                    "From", value=f.get("join_from"),
-                    key="gf_join_from", format="YYYY-MM-DD",
-                )
-            with c2:
-                join_to = st.date_input(
-                    "To", value=f.get("join_to"),
-                    key="gf_join_to", format="YYYY-MM-DD",
-                )
-            f["join_from"] = join_from.isoformat() if isinstance(join_from, date) else None
-            f["join_to"] = join_to.isoformat() if isinstance(join_to, date) else None
+            # Single range calendar: click the start day, then the end day, on
+            # the same popup — the selected span highlights visually. Passing a
+            # tuple value (even empty) puts st.date_input in range mode.
+            preset: tuple[date, ...] = ()
+            if f.get("join_from") and f.get("join_to"):
+                preset = (date.fromisoformat(f["join_from"]), date.fromisoformat(f["join_to"]))
+            sel = st.date_input(
+                "Click start, then end",
+                value=preset,
+                key="gf_join_range",
+                format="YYYY-MM-DD",
+                max_value=date.today(),
+            )
+            # Range mode returns a tuple/list of 0, 1 (mid-pick), or 2 dates.
+            if isinstance(sel, (list, tuple)) and len(sel) == 2:
+                f["join_from"], f["join_to"] = sel[0].isoformat(), sel[1].isoformat()
+            elif isinstance(sel, (list, tuple)) and len(sel) == 1:
+                f["join_from"], f["join_to"] = sel[0].isoformat(), None
+                st.caption("Click the end date to close the range.")
+            elif isinstance(sel, date):  # safety: single-date fallback
+                f["join_from"], f["join_to"] = sel.isoformat(), None
+            else:
+                f["join_from"] = f["join_to"] = None
 
         f["min_playtime_min"] = st.number_input(
             "Min playtime (minutes)",

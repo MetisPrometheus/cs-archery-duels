@@ -41,6 +41,45 @@ if not chests.empty and chests["opens"].sum() > 0:
 else:
     st.caption("No chest opens recorded yet.")
 
+# ── Products purchased (per-product breakdown from player_purchases) ──────
+section("Products purchased", "Per-product receipts from the purchase log — what's actually selling.")
+prod = q.product_breakdown(30)
+if not prod.empty:
+    fig = px.bar(prod, x="product_id", y="purchases")
+    fig.update_traces(marker_color=ARCHERY["accent"])
+    fig.update_layout(xaxis_title="", yaxis_title="Receipts")
+    st.plotly_chart(themed(fig), use_container_width=True)
+    st.dataframe(
+        prod.rename(columns={
+            "product_id": "Product", "purchases": "Receipts", "buyers": "Buyers",
+            "first_purchase": "First", "last_purchase": "Last",
+        }),
+        use_container_width=True, hide_index=True,
+    )
+else:
+    st.caption("No itemised purchases logged yet — the purchase log is empty for this cohort.")
+
+# ── Chest progression (lifetime_wins_for_chests) ─────────────────────────
+section("Chest progression", "Lifetime wins counted toward chest rewards — how far players grind.")
+cps = q.chest_progress_summary()
+with_progress = int(cps.get("with_progress", 0) or 0)
+cohort_n = int(cps.get("cohort_n", 0) or 0)
+kpi_row([
+    {"label": "Players progressing", "value": with_progress,
+     "sub": f"of {format_n(cohort_n)} players", "style": "accent"},
+    {"label": "Share progressing", "value": format_pct(100 * with_progress / max(cohort_n, 1))},
+    {"label": "Median wins-for-chests", "value": f"{float(cps.get('median_progress', 0) or 0):.0f}"},
+    {"label": "Max wins-for-chests", "value": int(cps.get("max_progress", 0) or 0)},
+])
+cp = q.chest_progression()
+if not cp.empty:
+    fig = px.histogram(cp, x="wins_for_chests", nbins=30)
+    fig.update_traces(marker_color=ARCHERY["primary"])
+    fig.update_layout(xaxis_title="Lifetime wins for chests", yaxis_title="Players")
+    st.plotly_chart(themed(fig), use_container_width=True)
+else:
+    st.caption("No chest progression recorded yet.")
+
 # ── Top purchasers ───────────────────────────────────────────────────────
 section("Top purchasers")
 pp = q.purchasers(50)
