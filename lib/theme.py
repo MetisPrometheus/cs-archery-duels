@@ -49,6 +49,39 @@ MATCH_LEN_LABELS   = ["≤30s", "≤60s", "≤2m", "≤4m", "≤8m", "8m+"]
 LOAD_TIME_LABELS   = ["≤2s", "≤4s", "≤7s", "≤12s", "≤20s", "20s+"]
 
 
+# Roblox developer-product IDs → human names. These are the DEV experience IDs
+# (GameId 10164052655) — the source of the current purchase data. The PROD
+# experience uses different product IDs; add them here when it goes live.
+# Unknown IDs fall back to "#<id>" via product_name() so nothing breaks.
+PRODUCT_NAMES = {
+    "3603667400": "Chest — Small",
+    "3603667446": "Chest — Medium",
+    "3603667736": "Chest — Large",
+    "3603668364": "Chest — Mythic",
+    "3603668853": "2× Coins (match summary)",
+    "3603668416": "Coins — Pouch (5K)",
+    "3603668698": "Coins — Sack (15K)",
+    "3603668735": "Coins — Chest (50K)",
+    "3603668757": "Coins — Vault (150K)",
+    "3603668790": "Coins — Fortune (500K)",
+    "3603668817": "Coins — Treasury (1.5M)",
+    "3603668955": "Armor — Void Set",
+    "3603668979": "Armor — Crystal Set",
+}
+
+
+def product_name(product_id: object) -> str:
+    """Human label for a Roblox developer-product ID. Unknown → '#<id>'."""
+    if product_id is None:
+        return "(unknown)"
+    return PRODUCT_NAMES.get(str(product_id), f"#{product_id}")
+
+
+def roblox_profile_url(user_id: object) -> str:
+    """Public Roblox profile URL for a user id (so a UID is one click from a name)."""
+    return f"https://www.roblox.com/users/{user_id}/profile"
+
+
 # Plotly default layout — applied via fig.update_layout(**PLOTLY_LAYOUT)
 PLOTLY_LAYOUT = dict(
     paper_bgcolor="rgba(0,0,0,0)",

@@ -7,7 +7,8 @@ import streamlit as st
 
 from lib import queries as q
 from lib.theme import (
-    ARCHERY, format_n, format_pct, footer, kpi_row, section, setup_page, themed,
+    ARCHERY, format_n, format_pct, footer, kpi_row, product_name,
+    roblox_profile_url, section, setup_page, themed,
 )
 
 setup_page("Monetization", icon="💰")
@@ -45,14 +46,18 @@ else:
 section("Products purchased", "Per-product receipts from the purchase log — what's actually selling.")
 prod = q.product_breakdown(30)
 if not prod.empty:
-    fig = px.bar(prod, x="product_id", y="purchases")
+    prod = prod.copy()
+    prod["product"] = prod["product_id"].map(product_name)
+    fig = px.bar(prod, x="product", y="purchases")
     fig.update_traces(marker_color=ARCHERY["accent"])
-    fig.update_layout(xaxis_title="", yaxis_title="Receipts")
+    # Force a categorical axis — product IDs are numeric-looking and plotly would
+    # otherwise render them as a continuous "3.6B" number line.
+    fig.update_layout(xaxis_title="", yaxis_title="Receipts", xaxis_type="category")
     st.plotly_chart(themed(fig), use_container_width=True)
     st.dataframe(
-        prod.rename(columns={
-            "product_id": "Product", "purchases": "Receipts", "buyers": "Buyers",
-            "first_purchase": "First", "last_purchase": "Last",
+        prod[["product", "product_id", "purchases", "buyers", "first_purchase", "last_purchase"]].rename(columns={
+            "product": "Product", "product_id": "Product ID", "purchases": "Receipts",
+            "buyers": "Buyers", "first_purchase": "First", "last_purchase": "Last",
         }),
         use_container_width=True, hide_index=True,
     )
@@ -84,12 +89,18 @@ else:
 section("Top purchasers")
 pp = q.purchasers(50)
 if not pp.empty:
+    pp = pp.copy()
+    pp["profile"] = pp["user_id"].map(roblox_profile_url)
     st.dataframe(
-        pp[["name", "purchases", "chest_opens"]].rename(columns={
+        pp[["name", "profile", "purchases", "chest_opens"]].rename(columns={
             "name": "Player", "purchases": "Receipts", "chest_opens": "Chest opens",
         }),
         use_container_width=True, hide_index=True,
+        column_config={
+            "profile": st.column_config.LinkColumn("Profile", display_text="open ↗"),
+        },
     )
+    st.caption("Player shows the stored username; click **Profile** to confirm who a bare-ID player is on Roblox.")
 else:
     st.caption("No purchases recorded yet.")
 
