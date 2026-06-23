@@ -552,13 +552,12 @@ def engagement_stats() -> pd.DataFrame:
 
 def playtime_survival() -> pd.DataFrame:
     """Drop-off / survival curve: % of players who reached at least N minutes
-    of play. Columns: seconds, minutes, remaining, pct.
+    of LIFETIME play. Columns: seconds, minutes, remaining, pct.
 
-    Source is `STATS.dailyPlaytime.seconds` (current-day playtime) — the only
-    populated playtime signal. `METRICS.sessions.totalPlaytime` is effectively
-    unwired (0 for ~99% of players; likely only written on player-leave, which
-    the Open Cloud poll rarely captures). dailyPlaytime resets each UTC day, so
-    read this as "within-a-day engagement", not lifetime.
+    Source is `METRICS.sessions.totalPlaytime` (flattened to `playtime_seconds`).
+    As of the heartbeat fix this accumulates live during play instead of only on
+    player-leave, so it's now populated for ~all active players and reads as true
+    lifetime engagement. (Pre-fix saves still show 0 and sink to the first bucket.)
     """
     src = player_src()
     thresholds = [
@@ -568,7 +567,7 @@ def playtime_survival() -> pd.DataFrame:
     out = df(
         f"""
         WITH base AS (
-            SELECT COALESCE((p.data->'STATS'->'dailyPlaytime'->>'seconds')::int, 0) AS pt
+            SELECT COALESCE(p.playtime_seconds, 0) AS pt
             FROM {src}
         ), tot AS (SELECT COUNT(*)::float n FROM base)
         SELECT thr AS seconds,
@@ -692,3 +691,237 @@ def player_percentile(user_id: int, metric_col: str) -> float | None:
     if not rows or rows[0]["pct"] is None:
         return None
     return float(rows[0]["pct"])
+
+
+# ════════════════════════════════════════════════════════════════════════
+# First-Time User Experience (FTUE)
+#
+# Sources (all populated by the session-metrics ETL in db.py, fed by the
+# heartbeat-flushed save rows):
+#   • player_sessions  — one row per session; idx=1 is the first-ever session.
+#   • player_matches   — one row per match;   idx=1 is the first-ever match.
+#   • first_day_*       — flattened rollup of all sessions in the first 24h.
+#   • player_screen_opens / chest_opens_total — what they reached.
+# Every query respects the global cohort filter via player_src().
+# ════════════════════════════════════════════════════════════════════════
+
+def ftue_summary() -> dict[str, Any]:
+    """Headline first-session numbers, denominator = players whose first
+    session was captured (post heartbeat-fix)."""
+    src = player_src()
+    rows = df(
+        f"""
+        WITH fs AS (
+            SELECT DISTINCT ON (s.user_id) s.*
+            FROM player_sessions s JOIN {src} ON p.user_id = s.user_id
+            ORDER BY s.user_id, s.idx
+        )
+        SELECT
+            COUNT(*)                                                    AS players,
+            AVG(duration_s)::float                                      AS avg_dur,
+            percentile_cont(0.5) WITHIN GROUP (ORDER BY duration_s)::float AS median_dur,
+            AVG(games_bot + games_pvp)::float                          AS avg_games,
+            percentile_cont(0.5) WITHIN GROUP (ORDER BY (games_bot+games_pvp))::float AS median_games,
+            100.0*COUNT(*) FILTER (WHERE games_pvp > 0)/NULLIF(COUNT(*),0)        AS pct_pvp,
+            100.0*COUNT(*) FILTER (WHERE wins_bot+wins_pvp > 0)/NULLIF(COUNT(*),0) AS pct_won,
+            100.0*COUNT(*) FILTER (WHERE ended_after_loss)/NULLIF(COUNT(*),0)     AS pct_ended_loss,
+            100.0*COUNT(*) FILTER (WHERE left_mid_match)/NULLIF(COUNT(*),0)       AS pct_left_mid,
+            AVG(aim_shots)::float                                       AS avg_aim_shots,
+            AVG(players_on_leave)::float                               AS avg_players_on_leave
+        FROM fs
+        """
+    )
+    return {} if rows.empty else rows.iloc[0].to_dict()
+
+
+def first_day_summary() -> dict[str, Any]:
+    """First-24h rollup (first_day_* columns)."""
+    src = player_src()
+    rows = df(
+        f"""
+        SELECT
+            COUNT(*) FILTER (WHERE first_day_recorded)                          AS players,
+            AVG(first_day_playtime_s) FILTER (WHERE first_day_recorded)::float  AS avg_playtime,
+            AVG(first_day_sessions)   FILTER (WHERE first_day_recorded)::float  AS avg_sessions,
+            AVG(first_day_games_bot + first_day_games_pvp)
+                FILTER (WHERE first_day_recorded)::float                        AS avg_games,
+            AVG(first_day_wins_bot + first_day_wins_pvp)
+                FILTER (WHERE first_day_recorded)::float                        AS avg_wins
+        FROM {src}
+        """
+    )
+    return {} if rows.empty else rows.iloc[0].to_dict()
+
+
+def first_session_duration_dist() -> pd.DataFrame:
+    """Histogram of first-session length. Ordered by `ord`."""
+    src = player_src()
+    return df(
+        f"""
+        WITH fs AS (
+            SELECT DISTINCT ON (s.user_id) s.duration_s
+            FROM player_sessions s JOIN {src} ON p.user_id = s.user_id
+            ORDER BY s.user_id, s.idx
+        )
+        SELECT bucket, ord, COUNT(*) AS n FROM (
+            SELECT CASE
+                WHEN duration_s <   60 THEN '0–1m'
+                WHEN duration_s <  120 THEN '1–2m'
+                WHEN duration_s <  300 THEN '2–5m'
+                WHEN duration_s <  600 THEN '5–10m'
+                WHEN duration_s < 1200 THEN '10–20m'
+                ELSE '20m+' END AS bucket,
+            CASE
+                WHEN duration_s <   60 THEN 0 WHEN duration_s <  120 THEN 1
+                WHEN duration_s <  300 THEN 2 WHEN duration_s <  600 THEN 3
+                WHEN duration_s < 1200 THEN 4 ELSE 5 END AS ord
+            FROM fs
+        ) t GROUP BY bucket, ord ORDER BY ord
+        """
+    )
+
+
+def first_session_games_dist() -> pd.DataFrame:
+    """Distribution of #games played in the first session (capped 6+)."""
+    src = player_src()
+    return df(
+        f"""
+        WITH fs AS (
+            SELECT DISTINCT ON (s.user_id) LEAST(s.games_bot + s.games_pvp, 6) AS games
+            FROM player_sessions s JOIN {src} ON p.user_id = s.user_id
+            ORDER BY s.user_id, s.idx
+        )
+        SELECT games, COUNT(*) AS n FROM fs GROUP BY 1 ORDER BY 1
+        """
+    )
+
+
+def ftue_first_matches(n_first: int = 3) -> pd.DataFrame:
+    """Maps & modes of each player's first N matches, with win-rate."""
+    src = player_src()
+    return df(
+        f"""
+        SELECT m.map, m.mode, COUNT(*) AS n,
+               100.0*COUNT(*) FILTER (WHERE m.result = 1)/NULLIF(COUNT(*),0) AS winrate
+        FROM player_matches m JOIN {src} ON p.user_id = m.user_id
+        WHERE m.idx <= %s
+        GROUP BY 1, 2 ORDER BY n DESC
+        """,
+        (n_first,),
+    )
+
+
+def first_match_outcome_retention() -> pd.DataFrame:
+    """Does the result of a player's VERY FIRST match predict retention?"""
+    src = player_src()
+    return df(
+        f"""
+        WITH fm AS (
+            SELECT DISTINCT ON (m.user_id) m.user_id, m.result, m.mode
+            FROM player_matches m JOIN {src} ON p.user_id = m.user_id
+            ORDER BY m.user_id, m.idx
+        )
+        SELECT
+            CASE fm.result WHEN 1 THEN 'Won 1st match'
+                           WHEN -1 THEN 'Lost 1st match' ELSE 'Tied 1st' END AS outcome,
+            fm.result AS ord,
+            COUNT(*) AS players,
+            100.0*COUNT(*) FILTER (WHERE COALESCE(p2.days_played,0) >= 2)/NULLIF(COUNT(*),0) AS pct_returned,
+            AVG(COALESCE(p2.matches_played,0))::float AS avg_matches,
+            AVG(COALESCE(p2.playtime_seconds,0))::float AS avg_playtime
+        FROM fm JOIN players_clean p2 ON p2.user_id = fm.user_id
+        GROUP BY 1, 2 ORDER BY 2 DESC
+        """
+    )
+
+
+def ftue_reach_funnel() -> pd.DataFrame:
+    """How far through the FTUE experience the cohort gets. Cohort-relative %."""
+    src = player_src()
+    rows = df(
+        f"""
+        WITH c AS (SELECT * FROM {src})
+        SELECT
+            COUNT(*) AS joined,
+            COUNT(*) FILTER (WHERE COALESCE(matches_played,0) >= 1) AS played_1,
+            COUNT(*) FILTER (WHERE COALESCE(matches_played,0) >= 3) AS played_3,
+            COUNT(*) FILTER (WHERE COALESCE(wins,0) >= 1)           AS won_1,
+            COUNT(*) FILTER (WHERE COALESCE(pvp_matches,0) >= 1)    AS tried_pvp,
+            COUNT(*) FILTER (WHERE user_id IN
+                (SELECT user_id FROM player_screen_opens WHERE screen='Inventory')) AS opened_inv,
+            COUNT(*) FILTER (WHERE COALESCE(chest_opens_total,0) >= 1) AS got_chest,
+            COUNT(*) FILTER (WHERE COALESCE(days_played,0) >= 2)    AS returned
+        FROM c
+        """
+    )
+    if rows.empty:
+        return rows
+    r = rows.iloc[0]
+    stages = [
+        ("Joined", r["joined"]),
+        ("Played 1 match", r["played_1"]),
+        ("Played 3 matches", r["played_3"]),
+        ("Won a match", r["won_1"]),
+        ("Tried PvP", r["tried_pvp"]),
+        ("Opened inventory", r["opened_inv"]),
+        ("Got a chest", r["got_chest"]),
+        ("Returned (day 2)", r["returned"]),
+    ]
+    base = float(r["joined"]) or 1.0
+    return pd.DataFrame({
+        "stage": [s for s, _ in stages],
+        "n": [int(v) for _, v in stages],
+        "pct": [round(100*v/base, 1) for _, v in stages],
+    })
+
+
+def stayers_vs_quitters() -> pd.DataFrame:
+    """Behaviour comparison across retention cohorts. The 'what do stayers do
+    that quitters don't' table — the nudge map."""
+    src = player_src()
+    return df(
+        f"""
+        WITH c AS (
+            SELECT p.*,
+                CASE WHEN COALESCE(days_played,0) >= 2          THEN 'Stayers (≥2 days)'
+                     WHEN COALESCE(sessions_count,0) <= 1       THEN 'One-and-done'
+                     ELSE 'Same-day returners' END AS grp
+            FROM {src}
+        ),
+        fs AS (SELECT DISTINCT ON (user_id) * FROM player_sessions ORDER BY user_id, idx)
+        SELECT
+            c.grp,
+            COUNT(*) AS players,
+            AVG(COALESCE(c.playtime_seconds,0))::float                 AS avg_playtime,
+            AVG(COALESCE(c.matches_played,0))::float                   AS avg_matches,
+            100.0*COUNT(*) FILTER (WHERE COALESCE(c.pvp_matches,0)>0)/COUNT(*) AS pct_pvp,
+            100.0*COUNT(*) FILTER (WHERE COALESCE(c.wins,0)>0)/COUNT(*)        AS pct_won,
+            100.0*COUNT(*) FILTER (WHERE c.user_id IN
+                (SELECT user_id FROM player_screen_opens WHERE screen='Inventory'))/COUNT(*) AS pct_inv,
+            100.0*COUNT(*) FILTER (WHERE COALESCE(c.chest_opens_total,0)>0)/COUNT(*) AS pct_chest,
+            AVG(fs.duration_s)::float                                  AS avg_first_dur,
+            AVG(fs.games_bot + fs.games_pvp)::float                    AS avg_first_games
+        FROM c LEFT JOIN fs ON fs.user_id = c.user_id
+        GROUP BY c.grp
+        """
+    )
+
+
+def early_match_matchmaking(n_first: int = 5) -> pd.DataFrame:
+    """Power matchup (mine vs opponent) across the first N matches, by match
+    number & mode. Surfaces whether new players get power-stomped early."""
+    src = player_src()
+    return df(
+        f"""
+        SELECT m.idx AS match_no, m.mode,
+               COUNT(*) AS n,
+               AVG(m.my_power)::float  AS my_power,
+               AVG(m.opp_power)::float AS opp_power,
+               AVG(m.opp_power - m.my_power)::float AS power_gap,
+               100.0*COUNT(*) FILTER (WHERE m.result = 1)/NULLIF(COUNT(*),0) AS winrate
+        FROM player_matches m JOIN {src} ON p.user_id = m.user_id
+        WHERE m.idx <= %s AND m.my_power > 0 AND m.opp_power > 0
+        GROUP BY 1, 2 ORDER BY 1, 2
+        """,
+        (n_first,),
+    )

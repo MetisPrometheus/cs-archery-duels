@@ -6,3 +6,7 @@ __pycache__/
 .config/
 samples/
 .streamlit/secrets.toml
+
+# Operational player-pool exports (real usernames — never commit)
+pvp_dummy_uids.csv
+pvp_backfill_pool.lua

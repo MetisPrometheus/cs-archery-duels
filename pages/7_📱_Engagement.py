@@ -25,10 +25,10 @@ returned = int((eng["days_played"] >= 2).sum())
 
 # ── Playtime drop-off (survival) curve ───────────────────────────────────
 section("Playtime drop-off curve",
-        "% of players still in the game as minutes-played climbs. Source: "
-        "current-day playtime (STATS.dailyPlaytime.seconds) — resets daily, so "
-        "read it as within-a-day engagement. (Lifetime totalPlaytime isn't wired "
-        "game-side yet — it's 0 for ~all players.)")
+        "% of players still in the game as lifetime minutes-played climbs. Source: "
+        "METRICS.sessions.totalPlaytime — now wired via the heartbeat fix, so it "
+        "accumulates live and is populated for ~all active players. See the 🚀 First "
+        "Session and 🔁 Stayers vs Quitters pages for the FTUE deep-dive.")
 sv = q.playtime_survival()
 if not sv.empty and sv["remaining"].iloc[0] > 0:
     fig = go.Figure(go.Scatter(

@@ -166,6 +166,82 @@ CREATE TABLE IF NOT EXISTS player_purchases (
     purchased_at TIMESTAMPTZ,
     PRIMARY KEY (user_id, purchase_ix)
 );
+
+
+-- METRICS.{firstSession, first7Days, recentSessions} unioned & deduped by idx.
+-- One row per (player, session). Bounded by the game-side caps
+-- (MAX_FIRST7_SESSIONS + MAX_RECENT_SESSIONS) so this is a barbell sample —
+-- first-7-days detail + last-N recent — NOT a full session census.
+CREATE TABLE IF NOT EXISTS player_sessions (
+    user_id              BIGINT NOT NULL REFERENCES players(user_id) ON DELETE CASCADE,
+    idx                  INT NOT NULL,        -- monotonic per-player session counter (PK)
+    ts                   TIMESTAMPTZ,         -- session start
+    since_first          INT,                 -- seconds from first-ever join
+    duration_s           INT,
+    clicked_play         BOOLEAN,
+    games_bot            INT,
+    games_pvp            INT,
+    wins_bot             INT,
+    wins_pvp             INT,
+    losses_bot           INT,
+    losses_pvp           INT,
+    ties_bot             INT,
+    ties_pvp             INT,
+    aim_time_s           DOUBLE PRECISION,
+    aim_shots            INT,
+    ended_after_loss     BOOLEAN,
+    last_result          INT,                 -- -1 loss / 0 none|tie / 1 win
+    opp_power_sum        BIGINT,
+    opp_power_n          INT,
+    my_power_sum         BIGINT,
+    my_power_n           INT,
+    last_map             TEXT,
+    loss_streak_at_leave INT,
+    left_mid_match       BOOLEAN,
+    players_on_leave     INT,
+    PRIMARY KEY (user_id, idx)
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_since_first ON player_sessions (since_first);
+CREATE INDEX IF NOT EXISTS idx_sessions_ts          ON player_sessions (ts);
+
+
+-- METRICS.matchLog — rolling last-N matches (cap MAX_MATCH_LOG). Canonical
+-- match-grain; a recent sample, not full history. session_idx FKs back to the
+-- owning player_sessions row (same player).
+CREATE TABLE IF NOT EXISTS player_matches (
+    user_id      BIGINT NOT NULL REFERENCES players(user_id) ON DELETE CASCADE,
+    idx          INT NOT NULL,                -- monotonic per-player match counter (PK)
+    session_idx  INT,                         -- -> player_sessions.idx for the same user
+    ts           TIMESTAMPTZ,                 -- match end
+    mode         TEXT,                        -- 'bot' | 'pvp'
+    map          TEXT,
+    duration_s   INT,
+    opp_power    INT,
+    my_power     INT,
+    result       INT,                         -- 1 win / -1 loss / 0 tie
+    PRIMARY KEY (user_id, idx)
+);
+CREATE INDEX IF NOT EXISTS idx_matches_session ON player_matches (user_id, session_idx);
+CREATE INDEX IF NOT EXISTS idx_matches_map     ON player_matches (map);
+CREATE INDEX IF NOT EXISTS idx_matches_mode    ON player_matches (mode);
+
+
+-- New METRICS scalars added after the players table first shipped — additive,
+-- idempotent. (CREATE TABLE above already has the originals for fresh installs.)
+ALTER TABLE players ADD COLUMN IF NOT EXISTS players_on_leave      INT;
+ALTER TABLE players ADD COLUMN IF NOT EXISTS first_any_click_at    INT;
+ALTER TABLE players ADD COLUMN IF NOT EXISTS first_day_recorded    BOOLEAN;
+ALTER TABLE players ADD COLUMN IF NOT EXISTS first_day_sessions    INT;
+ALTER TABLE players ADD COLUMN IF NOT EXISTS first_day_playtime_s  INT;
+ALTER TABLE players ADD COLUMN IF NOT EXISTS first_day_games_bot   INT;
+ALTER TABLE players ADD COLUMN IF NOT EXISTS first_day_games_pvp   INT;
+ALTER TABLE players ADD COLUMN IF NOT EXISTS first_day_wins_bot    INT;
+ALTER TABLE players ADD COLUMN IF NOT EXISTS first_day_wins_pvp    INT;
+ALTER TABLE players ADD COLUMN IF NOT EXISTS first_day_losses_bot  INT;
+ALTER TABLE players ADD COLUMN IF NOT EXISTS first_day_losses_pvp  INT;
+ALTER TABLE players ADD COLUMN IF NOT EXISTS first_day_ties_bot    INT;
+ALTER TABLE players ADD COLUMN IF NOT EXISTS first_day_ties_pvp    INT;
+ALTER TABLE players ADD COLUMN IF NOT EXISTS first_day_aim_time_s  DOUBLE PRECISION;
 """
 
 
@@ -212,6 +288,15 @@ def _safe_int(value: Any) -> int | None:
         return None
     try:
         return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _safe_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
     except (TypeError, ValueError):
         return None
 
@@ -290,6 +375,7 @@ def flatten(data: dict) -> dict[str, Any]:
     out["first_join_at"] = _epoch_to_dt(sessions.get("firstJoinDate"))
     out["last_join_at"] = _epoch_to_dt(sessions.get("lastJoinDate"))
     out["join_date"] = _epoch_to_date(sessions.get("firstJoinDate"))
+    out["players_on_leave"] = _safe_int(sessions.get("playersOnLeave"))
 
     clicks = _as_map(m.get("clicks"))
     out["play_match_clicks"] = _safe_int(clicks.get("playMatch"))
@@ -297,6 +383,22 @@ def flatten(data: dict) -> dict[str, Any]:
     out["bot_match_clicks"] = _safe_int(clicks.get("botMatch"))
     out["bot_match_successful"] = _safe_int(clicks.get("botMatchSuccessful"))
     out["first_play_click_at"] = _safe_int(clicks.get("firstPlayClickAt"))
+    out["first_any_click_at"] = _safe_int(clicks.get("firstAnyClickAt"))
+
+    # METRICS.firstDay — single rollup of sessions within 24h of first join.
+    fd = _as_map(m.get("firstDay"))
+    out["first_day_recorded"] = bool(fd.get("recorded"))
+    out["first_day_sessions"] = _safe_int(fd.get("sessions"))
+    out["first_day_playtime_s"] = _safe_int(fd.get("playtimeS"))
+    out["first_day_games_bot"] = _safe_int(fd.get("gamesBot"))
+    out["first_day_games_pvp"] = _safe_int(fd.get("gamesPvp"))
+    out["first_day_wins_bot"] = _safe_int(fd.get("winsBot"))
+    out["first_day_wins_pvp"] = _safe_int(fd.get("winsPvp"))
+    out["first_day_losses_bot"] = _safe_int(fd.get("lossesBot"))
+    out["first_day_losses_pvp"] = _safe_int(fd.get("lossesPvp"))
+    out["first_day_ties_bot"] = _safe_int(fd.get("tiesBot"))
+    out["first_day_ties_pvp"] = _safe_int(fd.get("tiesPvp"))
+    out["first_day_aim_time_s"] = _safe_float(fd.get("aimTimeS"))
 
     matches = _as_map(m.get("matches"))
     out["metrics_matches_played"] = _safe_int(matches.get("played"))
@@ -382,6 +484,84 @@ def _purchase_rows(uid: int, data: dict) -> Iterable[tuple]:
         )
 
 
+def _session_rows(uid: int, data: dict) -> Iterable[tuple]:
+    """Union firstSession ∪ first7Days ∪ recentSessions, dedup by `idx`.
+
+    The three windows overlap (a new player's first session appears in all
+    three). `idx` is the monotonic per-player session counter, so it's the
+    deterministic dedup key. firstSession is `false` until recorded — skipped
+    by the isinstance(dict) guard.
+    """
+    m = _as_map(data.get("METRICS"))
+    seen: dict[int, dict] = {}
+
+    def _add(row: Any) -> None:
+        if not isinstance(row, dict):
+            return
+        idx = _safe_int(row.get("idx"))
+        if idx is None or idx in seen:
+            return
+        seen[idx] = row
+
+    _add(m.get("firstSession"))
+    for key in ("first7Days", "recentSessions"):
+        arr = m.get(key)
+        if isinstance(arr, list):
+            for row in arr:
+                _add(row)
+
+    for idx, row in seen.items():
+        last_map = row.get("lastMap")
+        yield (
+            uid, idx,
+            _epoch_to_dt(row.get("ts")),
+            _safe_int(row.get("sinceFirst")),
+            _safe_int(row.get("durationS")),
+            bool(row.get("clickedPlay")),
+            _safe_int(row.get("gamesBot")), _safe_int(row.get("gamesPvp")),
+            _safe_int(row.get("winsBot")), _safe_int(row.get("winsPvp")),
+            _safe_int(row.get("lossesBot")), _safe_int(row.get("lossesPvp")),
+            _safe_int(row.get("tiesBot")), _safe_int(row.get("tiesPvp")),
+            _safe_float(row.get("aimTimeS")), _safe_int(row.get("aimShots")),
+            bool(row.get("endedAfterLoss")), _safe_int(row.get("lastResult")),
+            _safe_int(row.get("oppPowerSum")), _safe_int(row.get("oppPowerN")),
+            _safe_int(row.get("myPowerSum")), _safe_int(row.get("myPowerN")),
+            str(last_map) if last_map not in (None, "") else None,
+            _safe_int(row.get("lossStreakAtLeave")),
+            bool(row.get("leftMidMatch")),
+            _safe_int(row.get("playersOnLeave")),
+        )
+
+
+def _match_rows(uid: int, data: dict) -> Iterable[tuple]:
+    """METRICS.matchLog ring buffer → one row per match, dedup by `idx`."""
+    m = _as_map(data.get("METRICS"))
+    log = m.get("matchLog")
+    if not isinstance(log, list):
+        return
+    seen: set[int] = set()
+    for row in log:
+        if not isinstance(row, dict):
+            continue
+        idx = _safe_int(row.get("idx"))
+        if idx is None or idx in seen:
+            continue
+        seen.add(idx)
+        mode = row.get("mode")
+        mp = row.get("map")
+        yield (
+            uid, idx,
+            _safe_int(row.get("sessionIdx")),
+            _epoch_to_dt(row.get("ts")),
+            str(mode) if mode not in (None, "") else None,
+            str(mp) if mp not in (None, "") else None,
+            _safe_int(row.get("durationS")),
+            _safe_int(row.get("oppPower")),
+            _safe_int(row.get("myPower")),
+            _safe_int(row.get("result")),
+        )
+
+
 # ─── Writes ─────────────────────────────────────────────────────────────
 
 def record_discovered(conn: psycopg.Connection, uid: int) -> bool:
@@ -462,6 +642,31 @@ def record_fetch(
                     "(user_id, purchase_ix, product_id, grant_key, purchased_at) "
                     "VALUES (%s, %s, %s, %s, %s)",
                     pu,
+                )
+
+            cur.execute("DELETE FROM player_sessions WHERE user_id = %s", (uid,))
+            ss = list(_session_rows(uid, data))
+            if ss:
+                cur.executemany(
+                    "INSERT INTO player_sessions "
+                    "(user_id, idx, ts, since_first, duration_s, clicked_play, "
+                    "games_bot, games_pvp, wins_bot, wins_pvp, losses_bot, losses_pvp, "
+                    "ties_bot, ties_pvp, aim_time_s, aim_shots, ended_after_loss, "
+                    "last_result, opp_power_sum, opp_power_n, my_power_sum, my_power_n, "
+                    "last_map, loss_streak_at_leave, left_mid_match, players_on_leave) "
+                    "VALUES (" + ", ".join(["%s"] * 26) + ")",
+                    ss,
+                )
+
+            cur.execute("DELETE FROM player_matches WHERE user_id = %s", (uid,))
+            mm = list(_match_rows(uid, data))
+            if mm:
+                cur.executemany(
+                    "INSERT INTO player_matches "
+                    "(user_id, idx, session_idx, ts, mode, map, duration_s, "
+                    "opp_power, my_power, result) "
+                    "VALUES (" + ", ".join(["%s"] * 10) + ")",
+                    mm,
                 )
     else:
         with conn.cursor() as cur:

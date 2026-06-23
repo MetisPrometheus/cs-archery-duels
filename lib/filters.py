@@ -29,6 +29,7 @@ _DEFAULTS: dict[str, Any] = {
     "max_playtime_h": 0,     # hours, 0 = unlimited
     "min_matches": 0,        # STATS.aggregate.matchesPlayed >= n
     "played_pvp": False,     # only players who've played at least one PvP match
+    "opened_inventory": False,  # only players who've opened the Inventory UI >=1x
 }
 
 
@@ -45,6 +46,7 @@ def is_filter_active() -> bool:
         (f.get("max_playtime_h") or 0) > 0,
         (f.get("min_matches") or 0) > 0,
         f.get("played_pvp"),
+        f.get("opened_inventory"),
     ])
 
 
@@ -72,6 +74,15 @@ def filter_clause() -> str:
 
     if f.get("played_pvp"):
         parts.append("COALESCE(pvp_matches, 0) > 0")
+
+    if f.get("opened_inventory"):
+        # screenOpens lives in the child table player_screen_opens, not on the
+        # players_clean view — gate via a semi-join. The strongest retention
+        # signal we have: inventory-openers retain ~5x better (see analysis).
+        parts.append(
+            "user_id IN (SELECT user_id FROM player_screen_opens "
+            "WHERE screen = 'Inventory')"
+        )
 
     return " AND ".join(parts)
 
@@ -139,6 +150,12 @@ def render_global_filter() -> None:
         )
         f["played_pvp"] = st.checkbox(
             "PvP players only", value=bool(f.get("played_pvp")), key="gf_pvp",
+        )
+        f["opened_inventory"] = st.checkbox(
+            "Opened Inventory only", value=bool(f.get("opened_inventory")),
+            key="gf_inv",
+            help="Players who opened the Inventory UI at least once — the "
+                 "strongest retention/engagement signal in the data.",
         )
 
         if is_filter_active():
