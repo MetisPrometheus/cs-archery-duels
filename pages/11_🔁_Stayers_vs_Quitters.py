@@ -7,6 +7,7 @@ PvP?), which is the leading suspect for the one-and-done PvP cliff.
 """
 from __future__ import annotations
 
+import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
@@ -33,6 +34,11 @@ if svq.empty:
 ORDER = ["One-and-done", "Same-day returners", "Stayers (≥2 days)"]
 present = [g for g in ORDER if g in set(svq["grp"])]
 svq = svq.set_index("grp").reindex(present).reset_index()
+# never let a NULL avg (cohort with no captured first sessions) crash f-string formatting
+for _c in ["avg_playtime", "avg_matches", "pct_pvp", "pct_won", "pct_inv",
+           "pct_chest", "avg_first_dur", "avg_first_games"]:
+    if _c in svq.columns:
+        svq[_c] = pd.to_numeric(svq[_c], errors="coerce").fillna(0)
 COLORS = {"One-and-done": ARCHERY["danger"],
           "Same-day returners": ARCHERY["muted"],
           "Stayers (≥2 days)": ARCHERY["success"]}

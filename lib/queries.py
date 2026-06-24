@@ -899,8 +899,8 @@ def stayers_vs_quitters() -> pd.DataFrame:
             100.0*COUNT(*) FILTER (WHERE c.user_id IN
                 (SELECT user_id FROM player_screen_opens WHERE screen='Inventory'))/COUNT(*) AS pct_inv,
             100.0*COUNT(*) FILTER (WHERE COALESCE(c.chest_opens_total,0)>0)/COUNT(*) AS pct_chest,
-            AVG(fs.duration_s)::float                                  AS avg_first_dur,
-            AVG(fs.games_bot + fs.games_pvp)::float                    AS avg_first_games
+            COALESCE(AVG(fs.duration_s), 0)::float                     AS avg_first_dur,
+            COALESCE(AVG(fs.games_bot + fs.games_pvp), 0)::float       AS avg_first_games
         FROM c LEFT JOIN fs ON fs.user_id = c.user_id
         GROUP BY c.grp
         """
