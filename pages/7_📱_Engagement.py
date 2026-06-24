@@ -71,6 +71,45 @@ kpi_row([
      "median": format_time(eng["longest_session"].median())},
 ])
 
+# ── Does server population affect session length? ─────────────────────────
+section("Does server size affect session length?",
+        "Avg session length bucketed by how many players were in the server when "
+        "the player left (player_sessions.players_on_leave). A flat line = server "
+        "population isn't a lever (Roblox keeps servers full); a dip at low pop "
+        "would mean empty servers feel dead and shorten play — worth watching if "
+        "concurrency falls.")
+sp = q.session_length_by_server_pop()
+if not sp.empty:
+    sp = sp.copy()
+    sp["avg_min"] = (sp["avg_dur"] / 60).round(1)
+    fig = go.Figure(go.Bar(
+        x=sp["bucket"], y=sp["avg_min"],
+        marker_color=ARCHERY["primary"],
+        text=[f"{m:.1f}m<br>n={int(c):,}" for m, c in zip(sp["avg_min"], sp["sessions"])],
+        textposition="auto",
+        hovertemplate="%{x} players: %{y:.1f} min avg<extra></extra>",
+    ))
+    fig.update_layout(xaxis_title="players in server at leave", yaxis_title="avg session (min)",
+                      xaxis=dict(categoryorder="array", categoryarray=list(sp["bucket"])))
+    st.plotly_chart(themed(fig), use_container_width=True)
+    # verdict callout — ignore tiny buckets (<20 sessions) as noise
+    solid = sp[sp["sessions"] >= 20]
+    if len(solid) >= 2:
+        spread = solid["avg_min"].max() - solid["avg_min"].min()
+        if spread < 2:
+            st.markdown(
+                f"<div class='pill'>no effect</div> session length is flat "
+                f"(~{solid['avg_min'].median():.0f} min) across server sizes — "
+                f"population isn't currently affecting how long people play.",
+                unsafe_allow_html=True)
+        else:
+            st.markdown(
+                f"<div class='pill warn'>signal</div> session length varies "
+                f"{spread:.1f} min across server sizes — server population may be "
+                f"affecting engagement; worth a closer look.", unsafe_allow_html=True)
+else:
+    st.caption("No session-population data yet.")
+
 # ── Daily claims ─────────────────────────────────────────────────────────
 section("Daily-reward claims")
 kpi_row([

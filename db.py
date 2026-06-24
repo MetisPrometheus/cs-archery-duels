@@ -242,6 +242,14 @@ ALTER TABLE players ADD COLUMN IF NOT EXISTS first_day_losses_pvp  INT;
 ALTER TABLE players ADD COLUMN IF NOT EXISTS first_day_ties_bot    INT;
 ALTER TABLE players ADD COLUMN IF NOT EXISTS first_day_ties_pvp    INT;
 ALTER TABLE players ADD COLUMN IF NOT EXISTS first_day_aim_time_s  DOUBLE PRECISION;
+
+-- Project-role grants. init runs as the rw role which OWNS these tables; the ro
+-- role (Streamlit Cloud) needs explicit SELECT or dashboard reads 500. New child
+-- tables (player_sessions/player_matches) shipped without grants once and broke
+-- prod — keep this idempotent block so every init re-applies them, and set
+-- default privileges so future tables are covered automatically.
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO archery_duels_ro;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO archery_duels_ro;
 """
 
 

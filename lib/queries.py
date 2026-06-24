@@ -925,3 +925,35 @@ def early_match_matchmaking(n_first: int = 5) -> pd.DataFrame:
         """,
         (n_first,),
     )
+
+
+def session_length_by_server_pop() -> pd.DataFrame:
+    """Session length bucketed by how many players were in the server when the
+    player left (player_sessions.players_on_leave). Answers "does server size
+    affect how long people play?". Columns: bucket, ord, sessions, avg_dur,
+    median_dur, avg_games."""
+    src = player_src()
+    return df(
+        f"""
+        WITH s AS (
+            SELECT ps.players_on_leave AS pop, ps.duration_s,
+                   (ps.games_bot + ps.games_pvp) AS games
+            FROM player_sessions ps JOIN {src} ON p.user_id = ps.user_id
+            WHERE ps.players_on_leave IS NOT NULL AND ps.duration_s IS NOT NULL
+        )
+        SELECT bucket, ord,
+               COUNT(*)                                                   AS sessions,
+               AVG(duration_s)::float                                     AS avg_dur,
+               percentile_cont(0.5) WITHIN GROUP (ORDER BY duration_s)::float AS median_dur,
+               AVG(games)::float                                          AS avg_games
+        FROM (
+            SELECT *, CASE
+                WHEN pop <= 1  THEN '1 (alone)' WHEN pop <= 4  THEN '2–4'
+                WHEN pop <= 8  THEN '5–8'       WHEN pop <= 12 THEN '9–12'
+                WHEN pop <= 16 THEN '13–16'     ELSE '17+' END AS bucket,
+                CASE WHEN pop <= 1 THEN 0 WHEN pop <= 4 THEN 1 WHEN pop <= 8 THEN 2
+                     WHEN pop <= 12 THEN 3 WHEN pop <= 16 THEN 4 ELSE 5 END AS ord
+            FROM s
+        ) t GROUP BY bucket, ord ORDER BY ord
+        """
+    )
